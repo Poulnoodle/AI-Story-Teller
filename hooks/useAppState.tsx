@@ -1,0 +1,332 @@
+"use client";
+
+// 前端状态机：locked → ready → estimating → estimated → generating → done
+// 解锁：密码 === NEXT_PUBLIC_AUTH_PASSWORD（客户端软门禁，规格书约定）
+
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useReducer,
+  useRef,
+  type ReactNode,
+} from "react";
+import {
+  DEFAULT_BASE_URLS,
+  DEFAULT_MODELS,
+  DEFAULT_PASSWORD,
+} from "@/lib/constants";
+import type {
+  Phase,
+  Provider,
+  SearchResult,
+  TargetLang,
+} from "@/lib/types";
+import { postSSE } from "./useSSE";
+
+interface AppState {
+  phase: Phase;
+  password: string;
+  apiKey: string;
+  provider: Provider;
+  model: string;
+  baseUrl: string;
+  title: string;
+  targetLang: TargetLang;
+  style: string;
+  needAnalysis: boolean;
+  search: SearchResult | null;
+  /** 估价弹窗中点击过「确认」后，② 才可点击 */
+  confirmed: boolean;
+  showModal: boolean;
+  processedText: string;
+  analysis: string;
+  error: string | null;
+  /** 按 usage 事件累加的实际花费 */
+  cost: number;
+  /** 每次生成的唯一 key，用于重置打字机组件 */
+  genId: number;
+}
+
+const initialState: AppState = {
+  phase: "ready",
+  password: "",
+  apiKey: "",
+  provider: "openai",
+  model: DEFAULT_MODELS.openai,
+  baseUrl: DEFAULT_BASE_URLS.openai,
+  title: "",
+  targetLang: "zh",
+  style: "史诗感",
+  needAnalysis: false,
+  search: null,
+  confirmed: false,
+  showModal: false,
+  processedText: "",
+  analysis: "",
+  error: null,
+  cost: 0,
+  genId: 0,
+};
+
+type Action =
+  | { type: "SET_FIELD"; field: string; value: string | boolean }
+  | { type: "SET_PROVIDER"; provider: Provider }
+  | { type: "SEARCH_START" }
+  | { type: "SEARCH_OK"; result: SearchResult }
+  | { type: "SEARCH_FAIL"; message: string }
+  | { type: "CONFIRM" }
+  | { type: "CANCEL_MODAL" }
+  | { type: "GENERATE_START" }
+  | { type: "PROCESS_CHUNK"; delta: string }
+  | { type: "ANALYSIS_CHUNK"; delta: string }
+  | { type: "PROCESS_USAGE"; cost: number }
+  | { type: "PROCESS_ERROR"; message: string }
+  | { type: "PROCESS_DONE" }
+  | { type: "RESET" };
+
+function reducer(state: AppState, action: Action): AppState {
+  switch (action.type) {
+    case "SET_FIELD":
+      return { ...state, [action.field]: action.value };
+    case "SET_PROVIDER":
+      // 切换供应商时重置默认模型与端点
+      return {
+        ...state,
+        provider: action.provider,
+        model: DEFAULT_MODELS[action.provider],
+        baseUrl: DEFAULT_BASE_URLS[action.provider],
+      };
+    case "SEARCH_START":
+      return {
+        ...state,
+        phase: "estimating",
+        error: null,
+        search: null,
+        confirmed: false,
+        showModal: false,
+      };
+    case "SEARCH_OK":
+      return {
+        ...state,
+        phase: "estimated",
+        search: action.result,
+        showModal: true,
+        error: null,
+      };
+    case "SEARCH_FAIL":
+      return { ...state, phase: "ready", error: action.message, search: null };
+    case "CONFIRM":
+      return { ...state, showModal: false, confirmed: true };
+    case "CANCEL_MODAL":
+      return { ...state, showModal: false, confirmed: false };
+    case "GENERATE_START":
+      return {
+        ...state,
+        phase: "generating",
+        processedText: "",
+        analysis: "",
+        error: null,
+        cost: 0,
+        genId: state.genId + 1,
+      };
+    case "PROCESS_CHUNK":
+      return { ...state, processedText: state.processedText + action.delta };
+    case "ANALYSIS_CHUNK":
+      return { ...state, analysis: state.analysis + action.delta };
+    case "PROCESS_USAGE":
+      return { ...state, cost: state.cost + action.cost };
+    case "PROCESS_ERROR":
+      // 保留已生成的部分文本，回到可重试状态（② 可直接再次点击）
+      return { ...state, phase: "estimated", error: action.message };
+    case "PROCESS_DONE":
+      return { ...state, phase: "done" };
+    case "RESET":
+      return {
+        ...initialState,
+        password: state.password,
+        apiKey: state.apiKey,
+        provider: state.provider,
+        model: state.model,
+        baseUrl: state.baseUrl,
+      };
+    default:
+      return state;
+  }
+}
+
+interface AppContextValue {
+  state: AppState;
+  unlocked: boolean;
+  btn1Enabled: boolean;
+  btn2Enabled: boolean;
+  setField: (field: string, value: string | boolean) => void;
+  setProvider: (provider: Provider) => void;
+  runSearch: () => Promise<void>;
+  confirm: () => void;
+  cancelModal: () => void;
+  runGenerate: () => Promise<void>;
+  reset: () => void;
+}
+
+const AppContext = createContext<AppContextValue | null>(null);
+
+export function AppStateProvider({ children }: { children: ReactNode }) {
+  const [state, dispatch] = useReducer(reducer, initialState);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const unlocked =
+    state.password ===
+    (process.env.NEXT_PUBLIC_AUTH_PASSWORD || DEFAULT_PASSWORD);
+
+  // 组件卸载时中止进行中的流
+  useEffect(() => {
+    return () => abortRef.current?.abort();
+  }, []);
+
+  const setField = (field: string, value: string | boolean) =>
+    dispatch({ type: "SET_FIELD", field, value });
+
+  const setProvider = (provider: Provider) =>
+    dispatch({ type: "SET_PROVIDER", provider });
+
+  const runSearch = async () => {
+    if (!unlocked || state.phase === "estimating") return;
+    dispatch({ type: "SEARCH_START" });
+    try {
+      const res = await fetch("/api/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: state.title,
+          targetLang: state.targetLang,
+          userApiKey: state.apiKey || undefined,
+          provider: state.provider,
+          model: state.model,
+          baseUrl: state.baseUrl || undefined,
+        }),
+      });
+      const data = (await res.json()) as SearchResult;
+      if (data.rawText) {
+        dispatch({ type: "SEARCH_OK", result: data });
+      } else {
+        dispatch({
+          type: "SEARCH_FAIL",
+          message: data.error || "搜索失败，请重试",
+        });
+      }
+    } catch {
+      dispatch({ type: "SEARCH_FAIL", message: "网络错误，请重试" });
+    }
+  };
+
+  const confirm = () => dispatch({ type: "CONFIRM" });
+  const cancelModal = () => dispatch({ type: "CANCEL_MODAL" });
+
+  const runGenerate = async () => {
+    if (state.phase !== "estimated" || !state.confirmed || !state.search) {
+      return;
+    }
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    dispatch({ type: "GENERATE_START" });
+
+    try {
+      await postSSE(
+        "/api/process",
+        {
+          rawText: state.search.rawText,
+          style: state.style,
+          needAnalysis: state.needAnalysis,
+          userApiKey: state.apiKey,
+          provider: state.provider,
+          model: state.model,
+          baseUrl: state.baseUrl || undefined,
+          title: state.title,
+          targetLang: state.targetLang,
+        },
+        {
+          signal: controller.signal,
+          onEvent: (event, data) => {
+            switch (event) {
+              case "chunk":
+                if (typeof data.delta === "string") {
+                  dispatch({ type: "PROCESS_CHUNK", delta: data.delta });
+                }
+                break;
+              case "analysis_chunk":
+                if (typeof data.delta === "string") {
+                  dispatch({ type: "ANALYSIS_CHUNK", delta: data.delta });
+                }
+                break;
+              case "usage":
+                dispatch({
+                  type: "PROCESS_USAGE",
+                  cost: typeof data.estimatedCost === "number" ? data.estimatedCost : 0,
+                });
+                break;
+              case "error":
+                dispatch({
+                  type: "PROCESS_ERROR",
+                  message:
+                    typeof data.message === "string" ? data.message : "处理失败，请重试",
+                });
+                break;
+              case "done":
+                dispatch({ type: "PROCESS_DONE" });
+                break;
+              default:
+                break;
+            }
+          },
+        }
+      );
+    } catch {
+      // 主动中止（重新生成/卸载）不报错；网络错误才提示
+      if (!controller.signal.aborted) {
+        dispatch({ type: "PROCESS_ERROR", message: "网络错误，请重试" });
+      }
+    }
+  };
+
+  const reset = () => dispatch({ type: "RESET" });
+
+  const btn1Enabled =
+    unlocked &&
+    (state.phase === "ready" ||
+      state.phase === "estimated" ||
+      state.phase === "done") &&
+    state.title.trim().length > 0;
+  const btn2Enabled =
+    unlocked &&
+    state.phase === "estimated" &&
+    state.confirmed &&
+    !!state.search?.rawText;
+
+  return (
+    <AppContext.Provider
+      value={{
+        state,
+        unlocked,
+        btn1Enabled,
+        btn2Enabled,
+        setField,
+        setProvider,
+        runSearch,
+        confirm,
+        cancelModal,
+        runGenerate,
+        reset,
+      }}
+    >
+      {children}
+    </AppContext.Provider>
+  );
+}
+
+export function useAppState(): AppContextValue {
+  const ctx = useContext(AppContext);
+  if (!ctx) throw new Error("useAppState 必须在 AppStateProvider 内使用");
+  return ctx;
+}

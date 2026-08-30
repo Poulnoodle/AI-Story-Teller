@@ -3,25 +3,27 @@
 @tailwind utilities;
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --newspaper-bg: #f4ecd8;
+  --newspaper-ink: #3e2a1f;
+  --newspaper-gold: #b08d2e;
+  --newspaper-rule: #8a6f4d;
 }
 
 body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: var(--newspaper-bg);
+  /* 极淡的纸张横纹质感 */
+  background-image: repeating-linear-gradient(
+    0deg,
+    rgba(138, 111, 77, 0.035) 0 1px,
+    transparent 1px 26px
+  );
+  color: #000;
+  font-family: Georgia, "Times New Roman", "Noto Serif SC", "Songti SC",
+    SimSun, serif;
 }
 
-@layer utilities {
-  .text-balance {
-    text-wrap: balance;
-  }
+/* 报纸双线分隔 */
+.double-rule {
+  border-top: 3px double var(--newspaper-rule);
+  border-bottom: 3px double var(--newspaper-rule);
 }

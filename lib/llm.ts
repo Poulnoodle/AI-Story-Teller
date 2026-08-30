@@ -2,7 +2,7 @@
 // 支持 OpenAI 格式、Anthropic Messages API、自定义 OpenAI 兼容端点（统一用原生 fetch，不引入 SDK）
 // 注意：任何地方都不得打印 apiKey
 
-import type { LLMCallOpts, LLMResult, Provider } from "./types";
+import type { LLMCallOpts, LLMResult } from "./types";
 
 export class LLMError extends Error {
   status?: number;
