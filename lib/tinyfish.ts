@@ -2,6 +2,7 @@
 // 认证：所有请求携带 X-API-Key: <TINYFISH_API_KEY> 头
 // 搜索与抓取均免费（不从钱包扣费）
 
+import { countCJK, countLatinWords } from "./cost";
 import type {
   TinyFishFetchResponse,
   TinyFishSearchResponse,
@@ -92,9 +93,40 @@ const BOILERPLATE_PATTERNS: RegExp[] = [
   /^(阅读更多|查看更多|点击阅读全文|点击展开|展开全文|广告|相关推荐|猜你喜欢|热门推荐|免责声明|版权声明).*$/,
   /^(Skip to content|Read more|Related articles|Advertisement|Subscribe|Sign up|Log in).*$/i,
   /^.*(登录|注册|cookie|cookies|隐私政策|隐私条款|用户协议).*$/i,
+  // 社交平台登录墙 / 互动模板噪声
+  /^(Email or phone number|Password|Forgot password\?|Forgot Account\?|Create new account|Sign Up)$/i,
+  /^(Like|Comment|Share|Comments|No comments yet|Be the first to comment)$/i,
+  /^(Verified account|Shared with Public|See more on Facebook|Follow)$/i,
+  /^All reactions:.*$/i,
+  /^\d+$/, // 纯数字行
+  /^·$/, // 分隔符行
 ];
 
 const MAX_TEXT_LENGTH = 60000;
+
+/**
+ * 抓取结果是否可用：长度达标、包含足够多的实质内容（汉字或单词）、
+ * 且形态像正文（平均行长足够 + 至少一行 ≥80 字符的段落），
+ * 用于排除登录墙与视频列表页等噪声。
+ */
+export function isUsableExtract(text: string): boolean {
+  const MIN_CHARS = 100;
+  const MIN_CJK = 100;
+  const MIN_WORDS = 50;
+  const MIN_AVG_LINE = 40;
+  const PROSE_LINE = 80;
+
+  if (
+    text.length < MIN_CHARS ||
+    (countCJK(text) < MIN_CJK && countLatinWords(text) < MIN_WORDS)
+  ) {
+    return false;
+  }
+  const lines = text.split("\n").filter((l) => l.trim().length > 0);
+  if (lines.length === 0) return false;
+  const avgLine = text.length / lines.length;
+  return avgLine >= MIN_AVG_LINE && lines.some((l) => l.length >= PROSE_LINE);
+}
 
 /** 清洗抓取到的正文：去导航/广告等样板行、合并空行、超长截断 */
 export function cleanExtractedText(text: string): string {

@@ -6,6 +6,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   cleanExtractedText,
   fetchTinyFish,
+  isUsableExtract,
   searchTinyFish,
 } from "@/lib/tinyfish";
 import { completeLLM, LLMError } from "@/lib/llm";
@@ -22,7 +23,6 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const MIN_USABLE_CHARS = 100;
 const CANDIDATES_PER_ATTEMPT = 3;
 const MAX_ATTEMPTS = 3;
 
@@ -47,12 +47,37 @@ function attemptQueries(title: string, lang: TargetLang): string[] {
   return [`${title} 原文`, `${title} 神话 全文`, `${title}`];
 }
 
-/** 把标题拆成检索词（用于候选评分） */
+/** 英文停用词（含泛神话词，避免相关性判定过弱） */
+const EN_STOPWORDS = new Set([
+  "the", "of", "and", "or", "a", "an", "in", "on", "to", "is", "are", "was",
+  "were", "with", "by", "for", "at", "from", "that", "this", "it", "as",
+  "be", "he", "she", "they", "myth", "mythos", "mythology", "story",
+  "stories", "legend", "legends",
+]);
+
+/**
+ * 把标题拆成检索词（用于候选评分与相关性门禁）。
+ * CJK 整词附加 2 字 n-gram（如「雷神托尔」→ 雷神/神托/托尔），英文过滤停用词。
+ */
 function titleTokens(title: string): string[] {
-  return title
+  const parts = title
     .toLowerCase()
-    .split(/[\s,，。·、;；:：]+/)
-    .filter((t) => t.length >= 2);
+    .split(/[\s,，。·、;；:：!?！？"'“”‘’()（）\[\]]+/)
+    .filter(Boolean);
+  const tokens: string[] = [];
+  for (const p of parts) {
+    if (/^[一-鿿]+$/.test(p)) {
+      tokens.push(p);
+      if (p.length >= 4) {
+        for (let i = 0; i + 2 <= p.length; i++) tokens.push(p.slice(i, i + 2));
+      }
+    } else if (/^[a-z0-9]+$/.test(p)) {
+      if (!EN_STOPWORDS.has(p) && p.length >= 2) tokens.push(p);
+    } else if (p.length >= 2) {
+      tokens.push(p);
+    }
+  }
+  return tokens;
 }
 
 /** 候选命中标题关键词越多越优先（排序稳定，同分保持原始顺序） */
@@ -117,6 +142,9 @@ export async function POST(req: NextRequest) {
 
     if (candidates.length === 0) continue;
 
+    // 相关性门禁：候选的标题/摘要必须命中至少一个标题检索词，否则跳过抓取
+    if (!candidates.some((c) => scoreCandidate(tokens, c) > 0)) continue;
+
     let fetched;
     try {
       fetched = await fetchTinyFish(candidates.map((c) => c.url));
@@ -136,7 +164,7 @@ export async function POST(req: NextRequest) {
         continue;
       }
       const cleaned = cleanExtractedText(item.text ?? "");
-      if (cleaned.length < MIN_USABLE_CHARS) {
+      if (!isUsableExtract(cleaned)) {
         attempted.add(cand.url);
         continue;
       }
