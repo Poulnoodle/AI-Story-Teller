@@ -1,33 +1,38 @@
 "use client";
 
 // 操作按钮行：① 搜索并估价（灰色） ② 确认并生成（金色，估价确认后才可点击）
-// 中间为状态行；密码未解锁时全部置灰
+// 中间为状态行（含转圈提示）；密码未解锁时全部置灰
 
-import { useAppState } from "@/hooks/useAppState";
+import { useAppState, type AppState } from "@/hooks/useAppState";
+import Spinner from "./Spinner";
+import { generatingHint } from "./generatingHint";
 
-function statusText(state: ReturnType<typeof useAppState>["state"]): {
+function statusInfo(state: AppState): {
   text: string;
   isError: boolean;
+  showSpinner: boolean;
 } {
-  if (state.phase === "estimating") return { text: "正在搜索原文…", isError: false };
-  if (state.phase === "generating") return { text: "正在生成，请稍候…", isError: false };
-  if (state.phase === "done") return { text: "生成完成 ✅", isError: false };
+  if (state.phase === "estimating" || state.phase === "generating") {
+    return { text: generatingHint(state), isError: false, showSpinner: true };
+  }
+  if (state.phase === "done") return { text: "生成完成 ✅", isError: false, showSpinner: false };
   if (state.phase === "estimated" && state.search) {
     return {
       text: `已找到原文（${state.search.wordCount}字），${
         state.confirmed ? "可点击②生成" : "请在弹窗中确认"
       }`,
       isError: false,
+      showSpinner: false,
     };
   }
-  if (state.error) return { text: `⚠️ ${state.error}`, isError: true };
-  return { text: "", isError: false };
+  if (state.error) return { text: `⚠️ ${state.error}`, isError: true, showSpinner: false };
+  return { text: "", isError: false, showSpinner: false };
 }
 
 export default function ActionButtons() {
   const { state, unlocked, btn1Enabled, btn2Enabled, runSearch, runGenerate } =
     useAppState();
-  const status = statusText(state);
+  const status = statusInfo(state);
 
   return (
     <div className="mt-6 flex flex-wrap items-center gap-4">
@@ -50,7 +55,14 @@ export default function ActionButtons() {
           status.isError ? "text-red-700 font-bold" : "text-newspaper-ink/80"
         }`}
       >
-        {!unlocked ? "🔒 密码错误，全部功能已锁定" : status.text}
+        {!unlocked ? (
+          "🔒 密码错误，全部功能已锁定"
+        ) : (
+          <>
+            {status.showSpinner && <Spinner className="mr-2" />}
+            {status.text}
+          </>
+        )}
       </span>
     </div>
   );

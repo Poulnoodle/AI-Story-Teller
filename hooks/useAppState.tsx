@@ -24,7 +24,7 @@ import type {
 } from "@/lib/types";
 import { postSSE } from "./useSSE";
 
-interface AppState {
+export interface AppState {
   phase: Phase;
   password: string;
   apiKey: string;
@@ -46,6 +46,10 @@ interface AppState {
   cost: number;
   /** 每次生成的唯一 key，用于重置打字机组件 */
   genId: number;
+  /** /api/process 的 meta 事件（normal / long + 分块数） */
+  meta: { mode: "normal" | "long"; chunks: number | null } | null;
+  /** 长文本分段润色进度 */
+  progress: { done: number; total: number } | null;
 }
 
 const initialState: AppState = {
@@ -67,11 +71,21 @@ const initialState: AppState = {
   error: null,
   cost: 0,
   genId: 0,
+  meta: null,
+  progress: null,
 };
 
 type Action =
   | { type: "SET_FIELD"; field: string; value: string | boolean }
   | { type: "SET_PROVIDER"; provider: Provider }
+  | {
+      type: "HYDRATE";
+      config: Partial<
+        Pick<AppState, "apiKey" | "provider" | "model" | "baseUrl">
+      >;
+    }
+  | { type: "PROCESS_META"; mode: "normal" | "long"; chunks: number | null }
+  | { type: "PROCESS_PROGRESS"; done: number; total: number }
   | { type: "SEARCH_START" }
   | { type: "SEARCH_OK"; result: SearchResult }
   | { type: "SEARCH_FAIL"; message: string }
@@ -97,6 +111,19 @@ function reducer(state: AppState, action: Action): AppState {
         model: DEFAULT_MODELS[action.provider],
         baseUrl: DEFAULT_BASE_URLS[action.provider],
       };
+    case "HYDRATE": {
+      // 从 localStorage 恢复 LLM 配置（过滤 undefined，避免覆盖默认值）
+      const patch: Partial<AppState> = {};
+      if (action.config.apiKey !== undefined) patch.apiKey = action.config.apiKey;
+      if (action.config.provider !== undefined) patch.provider = action.config.provider;
+      if (action.config.model !== undefined) patch.model = action.config.model;
+      if (action.config.baseUrl !== undefined) patch.baseUrl = action.config.baseUrl;
+      return { ...state, ...patch };
+    }
+    case "PROCESS_META":
+      return { ...state, meta: { mode: action.mode, chunks: action.chunks }, progress: null };
+    case "PROCESS_PROGRESS":
+      return { ...state, progress: { done: action.done, total: action.total } };
     case "SEARCH_START":
       return {
         ...state,
@@ -129,6 +156,8 @@ function reducer(state: AppState, action: Action): AppState {
         error: null,
         cost: 0,
         genId: state.genId + 1,
+        meta: null,
+        progress: null,
       };
     case "PROCESS_CHUNK":
       return { ...state, processedText: state.processedText + action.delta };
@@ -138,7 +167,7 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, cost: state.cost + action.cost };
     case "PROCESS_ERROR":
       // 保留已生成的部分文本，回到可重试状态（② 可直接再次点击）
-      return { ...state, phase: "estimated", error: action.message };
+      return { ...state, phase: "estimated", error: action.message, progress: null };
     case "PROCESS_DONE":
       return { ...state, phase: "done" };
     case "RESET":
@@ -171,6 +200,11 @@ interface AppContextValue {
 
 const AppContext = createContext<AppContextValue | null>(null);
 
+/** LLM 配置的浏览器缓存 key（API Key 按用户要求持久化，访问密码不缓存） */
+const STORAGE_KEY = "mythhunter-llm-config";
+
+const VALID_PROVIDERS: Provider[] = ["openai", "anthropic", "custom"];
+
 export function AppStateProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const abortRef = useRef<AbortController | null>(null);
@@ -178,6 +212,51 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const unlocked =
     state.password ===
     (process.env.NEXT_PUBLIC_AUTH_PASSWORD || DEFAULT_PASSWORD);
+
+  // 挂载时从 localStorage 恢复 LLM 配置（API Key / 供应商 / 模型 / Base URL）
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const config = JSON.parse(raw) as Record<string, unknown>;
+      const provider = VALID_PROVIDERS.includes(config.provider as Provider)
+        ? (config.provider as Provider)
+        : undefined;
+      dispatch({
+        type: "HYDRATE",
+        config: {
+          apiKey: typeof config.apiKey === "string" ? config.apiKey : undefined,
+          provider,
+          model: typeof config.model === "string" ? config.model : undefined,
+          baseUrl: typeof config.baseUrl === "string" ? config.baseUrl : undefined,
+        },
+      });
+    } catch {
+      // 缓存损坏时静默忽略
+    }
+  }, []);
+
+  // LLM 配置变化时写入 localStorage（跳过挂载后首次触发，避免用默认值覆盖缓存）
+  const skipPersist = useRef(true);
+  useEffect(() => {
+    if (skipPersist.current) {
+      skipPersist.current = false;
+      return;
+    }
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          apiKey: state.apiKey,
+          provider: state.provider,
+          model: state.model,
+          baseUrl: state.baseUrl,
+        })
+      );
+    } catch {
+      // 隐私模式等场景下忽略
+    }
+  }, [state.apiKey, state.provider, state.model, state.baseUrl]);
 
   // 组件卸载时中止进行中的流
   useEffect(() => {
@@ -250,6 +329,21 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           signal: controller.signal,
           onEvent: (event, data) => {
             switch (event) {
+              case "meta":
+                dispatch({
+                  type: "PROCESS_META",
+                  mode: data.mode === "long" ? "long" : "normal",
+                  chunks:
+                    typeof data.chunks === "number" ? data.chunks : null,
+                });
+                break;
+              case "progress":
+                dispatch({
+                  type: "PROCESS_PROGRESS",
+                  done: typeof data.done === "number" ? data.done : 0,
+                  total: typeof data.total === "number" ? data.total : 0,
+                });
+                break;
               case "chunk":
                 if (typeof data.delta === "string") {
                   dispatch({ type: "PROCESS_CHUNK", delta: data.delta });
