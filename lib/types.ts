@@ -26,6 +26,8 @@ export interface ProcessInput {
   model: string;
   baseUrl?: string;
   title?: string;
+  /** 精修后故事的目标语言（zh / en），默认中文 */
+  targetLang?: TargetLang;
 }
 
 /** 前端状态机阶段 */
