@@ -7,10 +7,13 @@ export const DEFAULT_MODELS: Record<Provider, string> = {
   custom: "",
 };
 
-/** 各供应商默认 Base URL（占位提示，留空即用默认端点） */
+/**
+ * 各供应商默认 Base URL（留空即用官方默认端点）。
+ * openai 的 Base URL 语义为「备用端点」：官方连接失败时自动切换。
+ */
 export const DEFAULT_BASE_URLS: Record<Provider, string> = {
-  openai: "https://api.openai.com/v1",
-  anthropic: "https://api.anthropic.com",
+  openai: "",
+  anthropic: "",
   custom: "",
 };
 

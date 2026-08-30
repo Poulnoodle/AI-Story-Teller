@@ -235,6 +235,32 @@ async function main() {
     );
   }
 
+  // 7. 端点自动切换：provider=openai，官方端点连不上时自动改用备用 Base URL（Mock）
+  {
+    const frames = await postSSE("/api/process", {
+      rawText: "很久以前，天上住着雷神。",
+      style: "史诗感",
+      needAnalysis: false,
+      userApiKey: OPENAI_KEY,
+      provider: "openai",
+      model: "mock-model",
+      baseUrl: OPENAI_BASE,
+    });
+    const story = concatOf(frames, "chunk");
+    const err = framesOf(frames, "error")[0]?.data?.message;
+    const okViaFallback = story.length > 100 && frames.at(-1)?.event === "done";
+    // 官方端点可达的环境里假 Key 会直接 401（HTTP 错误不触发切换），属预期行为
+    const okVia401 = err === "API Key 无效或过期";
+    console.log(
+      `   [debug] viaFallback=${okViaFallback} 字数=${story.length} err=${err}`
+    );
+    check(
+      "端点自动切换：官方连不上时备用 Base URL 完成生成（官方可达时则 401）",
+      okViaFallback || okVia401,
+      JSON.stringify({ okViaFallback, err, events: frames.map((f) => f.event) })
+    );
+  }
+
   mock.kill();
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
   process.exit(fail ? 1 : 0);

@@ -48,31 +48,42 @@ export async function completeLLM(opts: LLMCallOpts): Promise<LLMResult> {
 
 const DEFAULT_OPENAI_BASE = "https://api.openai.com/v1";
 
-function openAIEndpoint(opts: LLMCallOpts): string {
-  const base = (opts.baseUrl || DEFAULT_OPENAI_BASE).replace(/\/+$/, "");
-  return `${base}/chat/completions`;
-}
+/** 官方端点此前发生过网络失败（连接超时等），后续调用直接跳过它 */
+let openaiOfficialUnreachable = false;
 
-async function callOpenAI(
-  opts: LLMCallOpts,
-  body: Record<string, unknown>
-): Promise<Response> {
-  try {
-    return await fetch(openAIEndpoint(opts), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${opts.apiKey}`,
-      },
-      body: JSON.stringify(body),
-      signal: opts.signal,
-    });
-  } catch (err) {
-    wrapNetworkError(err);
+/** 判断是否为网络层失败（连接超时/拒绝/解析失败），HTTP 错误不算 */
+function isNetworkError(err: unknown): boolean {
+  if (err instanceof LLMError) return false;
+  if (err instanceof Error && err.name === "AbortError") return false; // 客户端主动中止
+  const cause = (err as { cause?: unknown })?.cause as
+    | { code?: string }
+    | undefined;
+  if (cause?.code) {
+    const code = cause.code;
+    return (
+      code.startsWith("UND_ERR") ||
+      ["ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "ECONNRESET", "EAI_AGAIN"].includes(code)
+    );
   }
+  return err instanceof TypeError; // “fetch failed” 无 cause 时视为网络错误
 }
 
-async function streamOpenAICompatible(opts: LLMCallOpts): Promise<LLMResult> {
+/**
+ * 决定要尝试的端点顺序：
+ * - openai：官方 api.openai.com 为主；用户填写的 Base URL 作为连接失败后的自动备用
+ * - custom：用户填写的 Base URL 为唯一端点（中转/代理用户的主端点）
+ */
+function openAIEndpoints(opts: LLMCallOpts): string[] {
+  const userBase = (opts.baseUrl ?? "").trim().replace(/\/+$/, "");
+  if (opts.provider === "custom") {
+    return [userBase || DEFAULT_OPENAI_BASE];
+  }
+  const endpoints = [DEFAULT_OPENAI_BASE];
+  if (userBase && userBase !== DEFAULT_OPENAI_BASE) endpoints.push(userBase);
+  return endpoints;
+}
+
+function openAIBody(opts: LLMCallOpts): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: opts.model,
     messages: [
@@ -83,20 +94,65 @@ async function streamOpenAICompatible(opts: LLMCallOpts): Promise<LLMResult> {
     temperature: 0.8,
   };
   if (opts.maxTokens) body.max_tokens = opts.maxTokens;
+  return body;
+}
 
-  // stream_options 用于回传 usage；部分兼容端点不支持（400），降级重试一次
-  let res = await callOpenAI(opts, {
-    ...body,
-    stream_options: { include_usage: true },
+async function callOpenAI(
+  endpoint: string,
+  opts: LLMCallOpts,
+  body: Record<string, unknown>
+): Promise<Response> {
+  return fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${opts.apiKey}`,
+    },
+    body: JSON.stringify(body),
+    signal: opts.signal,
   });
-  if (res.status === 400) {
-    res = await callOpenAI(opts, body);
+}
+
+async function streamOpenAICompatible(opts: LLMCallOpts): Promise<LLMResult> {
+  const body = openAIBody(opts);
+  const endpoints = openAIEndpoints(opts);
+
+  for (const base of endpoints) {
+    if (base === DEFAULT_OPENAI_BASE && openaiOfficialUnreachable) {
+      continue; // 官方端点此前网络失败过，跳过
+    }
+    try {
+      const endpoint = `${base}/chat/completions`;
+      // stream_options 用于回传 usage；部分兼容端点不支持（400），降级重试一次
+      let res = await callOpenAI(endpoint, opts, {
+        ...body,
+        stream_options: { include_usage: true },
+      });
+      if (res.status === 400) {
+        res = await callOpenAI(endpoint, opts, body);
+      }
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        throw new LLMError(friendlyError(res.status, errText), res.status);
+      }
+      return parseOpenAIStream(
+        res.body as ReadableStream<Uint8Array>,
+        opts.onDelta
+      );
+    } catch (err) {
+      if (isNetworkError(err)) {
+        if (base === DEFAULT_OPENAI_BASE) openaiOfficialUnreachable = true;
+        continue; // 网络层失败 → 自动切换到下一个端点（用户提供的 API）
+      }
+      throw wrapNetworkError(err);
+    }
   }
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    throw new LLMError(friendlyError(res.status, errText), res.status);
-  }
-  return parseOpenAIStream(res.body as ReadableStream<Uint8Array>, opts.onDelta);
+
+  throw new LLMError(
+    endpoints.length > 1
+      ? "无法连接模型服务：官方端点与备用 Base URL 均连接失败"
+      : "无法连接模型服务，请检查网络或 Base URL"
+  );
 }
 
 async function parseOpenAIStream(

@@ -62,13 +62,21 @@ export default function SettingsPanel() {
           />
         </div>
         <div>
-          <label className={labelCls}>Base URL（留空使用官方默认端点）</label>
+          <label className={labelCls}>
+            {state.provider === "openai"
+              ? "备用 Base URL（官方连不上时自动切换，留空只用官方）"
+              : state.provider === "custom"
+                ? "Base URL（必填，需含 /v1）"
+                : "Base URL（留空使用官方默认端点）"}
+          </label>
           <input
             className={inputCls}
             placeholder={
               state.provider === "custom"
                 ? "需含 /v1，如 https://api.example.com/v1"
-                : undefined
+                : state.provider === "openai"
+                  ? "如 https://your-proxy.example.com/v1"
+                  : undefined
             }
             value={state.baseUrl}
             onChange={(e) => setField("baseUrl", e.target.value)}
