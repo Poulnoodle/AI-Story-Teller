@@ -65,6 +65,11 @@ export default function SettingsPanel() {
           <label className={labelCls}>Base URL（留空使用官方默认端点）</label>
           <input
             className={inputCls}
+            placeholder={
+              state.provider === "custom"
+                ? "需含 /v1，如 https://api.example.com/v1"
+                : undefined
+            }
             value={state.baseUrl}
             onChange={(e) => setField("baseUrl", e.target.value)}
           />
