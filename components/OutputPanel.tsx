@@ -58,6 +58,16 @@ export default function OutputPanel() {
               ⚠️ AI 重构，未经原始文献核实
             </p>
           )}
+          {showStory && state.search?.rawText && (
+            <details className="mt-4 border-t border-newspaper-rule pt-2">
+              <summary className="cursor-pointer font-serif font-bold text-newspaper-ink">
+                📜 原文（参考）
+              </summary>
+              <p className="mt-2 whitespace-pre-wrap leading-relaxed text-black/80 text-sm">
+                {state.search.rawText}
+              </p>
+            </details>
+          )}
         </div>
 
         {/* 右列：神话解析 */}

@@ -30,7 +30,7 @@ export default function SettingsPanel() {
           />
         </div>
         <div>
-          <label className={labelCls}>LLM API Key（仅存内存，刷新即清空）</label>
+          <label className={labelCls}>LLM API Key</label>
           <input
             type="password"
             className={inputCls}
@@ -64,7 +64,7 @@ export default function SettingsPanel() {
         <div>
           <label className={labelCls}>
             {state.provider === "openai"
-              ? "备用 Base URL（官方连不上时自动切换，留空只用官方）"
+              ? "Base URL（主端点，连不上自动回退官方；留空只用官方）"
               : state.provider === "custom"
                 ? "Base URL（必填，需含 /v1）"
                 : "Base URL（留空使用官方默认端点）"}
@@ -74,9 +74,7 @@ export default function SettingsPanel() {
             placeholder={
               state.provider === "custom"
                 ? "需含 /v1，如 https://api.example.com/v1"
-                : state.provider === "openai"
-                  ? "如 https://your-proxy.example.com/v1"
-                  : undefined
+                : undefined
             }
             value={state.baseUrl}
             onChange={(e) => setField("baseUrl", e.target.value)}

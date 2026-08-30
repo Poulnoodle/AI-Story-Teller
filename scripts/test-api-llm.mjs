@@ -235,7 +235,7 @@ async function main() {
     );
   }
 
-  // 7. 端点自动切换：provider=openai，官方端点连不上时自动改用备用 Base URL（Mock）
+  // 7. Base URL 作为主端点：provider=openai + 自定义 Base URL（Mock）直接生成
   {
     const frames = await postSSE("/api/process", {
       rawText: "很久以前，天上住着雷神。",
@@ -248,16 +248,36 @@ async function main() {
     });
     const story = concatOf(frames, "chunk");
     const err = framesOf(frames, "error")[0]?.data?.message;
-    const okViaFallback = story.length > 100 && frames.at(-1)?.event === "done";
-    // 官方端点可达的环境里假 Key 会直接 401（HTTP 错误不触发切换），属预期行为
-    const okVia401 = err === "API Key 无效或过期";
-    console.log(
-      `   [debug] viaFallback=${okViaFallback} 字数=${story.length} err=${err}`
-    );
+    const okViaPrimary = story.length > 100 && frames.at(-1)?.event === "done";
+    console.log(`   [debug] viaPrimary=${okViaPrimary} 字数=${story.length} err=${err}`);
     check(
-      "端点自动切换：官方连不上时备用 Base URL 完成生成（官方可达时则 401）",
-      okViaFallback || okVia401,
-      JSON.stringify({ okViaFallback, err, events: frames.map((f) => f.event) })
+      "Base URL 主端点：provider=openai 直接走自定义端点完成生成",
+      okViaPrimary,
+      JSON.stringify({ err, events: frames.map((f) => f.event) })
+    );
+  }
+
+  // 8. 端点回退：主端点（无人监听的端口）连接失败 → 自动回退官方端点
+  {
+    const closedPortBase = `http://localhost:${Number(MOCK_PORT) - 1}/v1`;
+    const frames = await postSSE("/api/process", {
+      rawText: "很久以前，天上住着雷神。",
+      style: "史诗感",
+      needAnalysis: false,
+      userApiKey: OPENAI_KEY,
+      provider: "openai",
+      model: "mock-model",
+      baseUrl: closedPortBase,
+    });
+    const err = framesOf(frames, "error")[0]?.data?.message;
+    // 主端点失败 → 回退官方：官方不可达时报“均连接失败”，可达时报 401（假 Key）
+    const ok =
+      (err && err.includes("无法连接模型服务")) || err === "API Key 无效或过期";
+    console.log(`   [debug] err=${err}`);
+    check(
+      "端点回退：主端点失败自动回退官方（官方不可达时报友好错误）",
+      ok,
+      JSON.stringify({ err, events: frames.map((f) => f.event) })
     );
   }
 

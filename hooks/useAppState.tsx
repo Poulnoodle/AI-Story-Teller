@@ -214,6 +214,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     (process.env.NEXT_PUBLIC_AUTH_PASSWORD || DEFAULT_PASSWORD);
 
   // 挂载时从 localStorage 恢复 LLM 配置（API Key / 供应商 / 模型 / Base URL）
+  // 旧默认值（gpt-4o-mini / 空或官方地址）自动迁移到新默认（DeepSeek）
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -222,13 +223,23 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       const provider = VALID_PROVIDERS.includes(config.provider as Provider)
         ? (config.provider as Provider)
         : undefined;
+      let model = typeof config.model === "string" ? config.model : undefined;
+      let baseUrl = typeof config.baseUrl === "string" ? config.baseUrl : undefined;
+      if (!provider || provider === "openai") {
+        // 旧默认迁移：model 为旧默认、baseUrl 为空或旧官方地址 → 换用新默认
+        if (model === "gpt-4o-mini") model = DEFAULT_MODELS.openai;
+        const trimmed = (baseUrl ?? "").trim();
+        if (trimmed === "" || trimmed === "https://api.openai.com/v1") {
+          baseUrl = DEFAULT_BASE_URLS.openai;
+        }
+      }
       dispatch({
         type: "HYDRATE",
         config: {
           apiKey: typeof config.apiKey === "string" ? config.apiKey : undefined,
           provider,
-          model: typeof config.model === "string" ? config.model : undefined,
-          baseUrl: typeof config.baseUrl === "string" ? config.baseUrl : undefined,
+          model,
+          baseUrl,
         },
       });
     } catch {
@@ -311,6 +322,11 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     abortRef.current = controller;
     dispatch({ type: "GENERATE_START" });
 
+    // 流可能在没有 done/error 事件的情况下终止（如服务端超时切断），
+    // 用标记记录是否收到终止事件，流结束后据此收尾，避免永远停在“生成中”
+    let finished = false;
+    let receivedText = false;
+
     try {
       await postSSE(
         "/api/process",
@@ -346,6 +362,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
                 break;
               case "chunk":
                 if (typeof data.delta === "string") {
+                  receivedText = true;
                   dispatch({ type: "PROCESS_CHUNK", delta: data.delta });
                 }
                 break;
@@ -361,6 +378,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
                 });
                 break;
               case "error":
+                finished = true;
                 dispatch({
                   type: "PROCESS_ERROR",
                   message:
@@ -368,6 +386,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
                 });
                 break;
               case "done":
+                finished = true;
                 dispatch({ type: "PROCESS_DONE" });
                 break;
               default:
@@ -376,6 +395,17 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           },
         }
       );
+      // 流正常结束但未收到 done/error（服务端中断）：已收到部分文本则按完成收尾，否则报错
+      if (!finished) {
+        if (receivedText) {
+          dispatch({ type: "PROCESS_DONE" });
+        } else {
+          dispatch({
+            type: "PROCESS_ERROR",
+            message: "连接中断，未收到完整结果，请重试",
+          });
+        }
+      }
     } catch {
       // 主动中止（重新生成/卸载）不报错；网络错误才提示
       if (!controller.signal.aborted) {

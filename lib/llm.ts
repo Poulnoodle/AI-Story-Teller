@@ -48,8 +48,8 @@ export async function completeLLM(opts: LLMCallOpts): Promise<LLMResult> {
 
 const DEFAULT_OPENAI_BASE = "https://api.openai.com/v1";
 
-/** 官方端点此前发生过网络失败（连接超时等），后续调用直接跳过它 */
-let openaiOfficialUnreachable = false;
+/** 网络层失败过（连接超时等）的端点，后续调用直接跳过，避免重复等待 */
+const unreachableBases = new Set<string>();
 
 /** 判断是否为网络层失败（连接超时/拒绝/解析失败），HTTP 错误不算 */
 function isNetworkError(err: unknown): boolean {
@@ -70,7 +70,8 @@ function isNetworkError(err: unknown): boolean {
 
 /**
  * 决定要尝试的端点顺序：
- * - openai：官方 api.openai.com 为主；用户填写的 Base URL 作为连接失败后的自动备用
+ * - openai：用户填写的 Base URL（默认 https://api.deepseek.com）为主端点；
+ *   网络层失败时自动回退官方 api.openai.com
  * - custom：用户填写的 Base URL 为唯一端点（中转/代理用户的主端点）
  */
 function openAIEndpoints(opts: LLMCallOpts): string[] {
@@ -78,8 +79,10 @@ function openAIEndpoints(opts: LLMCallOpts): string[] {
   if (opts.provider === "custom") {
     return [userBase || DEFAULT_OPENAI_BASE];
   }
-  const endpoints = [DEFAULT_OPENAI_BASE];
-  if (userBase && userBase !== DEFAULT_OPENAI_BASE) endpoints.push(userBase);
+  const endpoints = [userBase || DEFAULT_OPENAI_BASE];
+  if (userBase && userBase !== DEFAULT_OPENAI_BASE) {
+    endpoints.push(DEFAULT_OPENAI_BASE);
+  }
   return endpoints;
 }
 
@@ -118,8 +121,8 @@ async function streamOpenAICompatible(opts: LLMCallOpts): Promise<LLMResult> {
   const endpoints = openAIEndpoints(opts);
 
   for (const base of endpoints) {
-    if (base === DEFAULT_OPENAI_BASE && openaiOfficialUnreachable) {
-      continue; // 官方端点此前网络失败过，跳过
+    if (unreachableBases.has(base)) {
+      continue; // 该端点此前网络失败过，跳过
     }
     try {
       const endpoint = `${base}/chat/completions`;
@@ -141,8 +144,8 @@ async function streamOpenAICompatible(opts: LLMCallOpts): Promise<LLMResult> {
       );
     } catch (err) {
       if (isNetworkError(err)) {
-        if (base === DEFAULT_OPENAI_BASE) openaiOfficialUnreachable = true;
-        continue; // 网络层失败 → 自动切换到下一个端点（用户提供的 API）
+        unreachableBases.add(base); // 记录失败端点，后续跳过
+        continue; // 网络层失败 → 自动切换到下一个端点
       }
       throw wrapNetworkError(err);
     }
@@ -150,7 +153,7 @@ async function streamOpenAICompatible(opts: LLMCallOpts): Promise<LLMResult> {
 
   throw new LLMError(
     endpoints.length > 1
-      ? "无法连接模型服务：官方端点与备用 Base URL 均连接失败"
+      ? "无法连接模型服务：Base URL 与官方端点均连接失败"
       : "无法连接模型服务，请检查网络或 Base URL"
   );
 }

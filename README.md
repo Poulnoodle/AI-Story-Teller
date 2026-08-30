@@ -42,7 +42,8 @@ hooks/            useAppState（状态机）、useSSE
 
 - 费用估算：`(原文字数 / 1000 × $0.002) × 3 步骤`；生成时按各次调用实际 token 用量累加。
 - 用户 LLM Key 仅随请求透传后端，不落盘、不打日志（浏览器 localStorage 会缓存 LLM 配置，密码不缓存）。
-- **端点自动切换**：供应商为 OpenAI 时，官方 `api.openai.com` 连接失败（网络层）会自动改用「备用 Base URL」重试；曾经连不上的官方端点会被跳过，避免重复等待。中转/代理用户可选「自定义兼容端点」以自己的地址为主端点。
+- **默认配置**：供应商 OpenAI、模型 `deepseek-v4-flash`、Base URL `https://api.deepseek.com`（可在设置中修改）。
+- **端点自动切换**：供应商为 OpenAI 时，Base URL（默认 DeepSeek）为主端点；网络层连接失败自动回退官方 `api.openai.com`。曾经连不上的端点会被跳过，避免重复等待超时。中转/代理用户可选「自定义兼容端点」以自己的地址为唯一主端点。
 - 所有 LLM 文本以纯文本渲染，无 XSS 风险。
 
 ## 部署到 Vercel

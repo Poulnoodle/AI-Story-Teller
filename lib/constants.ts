@@ -2,17 +2,17 @@ import type { Provider, TargetLang } from "./types";
 
 /** 各供应商默认模型（UI 中可编辑） */
 export const DEFAULT_MODELS: Record<Provider, string> = {
-  openai: "gpt-4o-mini",
+  openai: "deepseek-v4-flash",
   anthropic: "claude-3-7-sonnet-latest",
   custom: "",
 };
 
 /**
- * 各供应商默认 Base URL（留空即用官方默认端点）。
- * openai 的 Base URL 语义为「备用端点」：官方连接失败时自动切换。
+ * 各供应商默认 Base URL。
+ * openai：填写后作为主端点，连接失败自动回退官方 api.openai.com；留空则只用官方。
  */
 export const DEFAULT_BASE_URLS: Record<Provider, string> = {
-  openai: "",
+  openai: "https://api.deepseek.com",
   anthropic: "",
   custom: "",
 };
