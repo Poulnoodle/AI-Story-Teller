@@ -23,6 +23,16 @@ function friendlyError(status: number, body?: string): string {
   return `模型服务错误：HTTP ${status}${snippet ? `（${snippet}）` : ""}`;
 }
 
+/** 把网络层错误（fetch 失败/连接超时）映射为友好提示 */
+function wrapNetworkError(err: unknown): never {
+  if (err instanceof LLMError) throw err;
+  const cause = (err as { cause?: { code?: string } })?.cause?.code ?? "";
+  if (typeof cause === "string" && cause.startsWith("UND_ERR")) {
+    throw new LLMError("无法连接模型服务，请检查网络或 Base URL");
+  }
+  throw new LLMError("模型服务请求失败，请稍后重试");
+}
+
 /** 流式调用 LLM，返回完整文本与 token 用量 */
 export async function streamLLM(opts: LLMCallOpts): Promise<LLMResult> {
   if (opts.provider === "anthropic") return streamAnthropic(opts);
@@ -47,15 +57,19 @@ async function callOpenAI(
   opts: LLMCallOpts,
   body: Record<string, unknown>
 ): Promise<Response> {
-  return fetch(openAIEndpoint(opts), {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${opts.apiKey}`,
-    },
-    body: JSON.stringify(body),
-    signal: opts.signal,
-  });
+  try {
+    return await fetch(openAIEndpoint(opts), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${opts.apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal: opts.signal,
+    });
+  } catch (err) {
+    wrapNetworkError(err);
+  }
 }
 
 async function streamOpenAICompatible(opts: LLMCallOpts): Promise<LLMResult> {
@@ -142,16 +156,21 @@ async function streamAnthropic(opts: LLMCallOpts): Promise<LLMResult> {
     temperature: 0.8,
   };
 
-  const res = await fetch(`${base}/v1/messages`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": opts.apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify(body),
-    signal: opts.signal,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${base}/v1/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": opts.apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify(body),
+      signal: opts.signal,
+    });
+  } catch (err) {
+    wrapNetworkError(err);
+  }
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
     throw new LLMError(friendlyError(res.status, errText), res.status);
