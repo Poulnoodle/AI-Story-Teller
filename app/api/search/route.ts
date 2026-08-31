@@ -11,7 +11,13 @@ import {
 } from "@/lib/tinyfish";
 import { completeLLM, LLMError } from "@/lib/llm";
 import { countCJK, countLatinWords, estimateSearchCost } from "@/lib/cost";
-import { DEFAULT_MODELS, FALLBACK_MARKER } from "@/lib/constants";
+import {
+  BOOSTED_DOMAINS,
+  DEFAULT_MODELS,
+  FALLBACK_MARKER,
+  PREFERRED_DOMAINS,
+  PREFERRED_SITES,
+} from "@/lib/constants";
 import type {
   Provider,
   SearchResult,
@@ -35,16 +41,37 @@ interface SearchRequestBody {
   baseUrl?: string;
 }
 
-/** 三次尝试的查询词递进 */
+/**
+ * 三次尝试的查询词递进：
+ * 第 1 次用裸标题（仅限优先站点内搜索）；第 2、3 次加限定词（全网搜索）
+ */
 function attemptQueries(title: string, lang: TargetLang): string[] {
   if (lang === "en") {
-    return [
-      `${title} original text`,
-      `${title} myth full text`,
-      `${title}`,
-    ];
+    return [title, `${title} original text`, `${title} myth full text`];
   }
-  return [`${title} 原文`, `${title} 神话 全文`, `${title}`];
+  return [title, `${title} 原文`, `${title} 神话 全文`];
+}
+
+/** 提取域名（去掉 www. 前缀） */
+function domainOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+/** 域名加权：优先站 +2，维基百科（wikiwand 镜像同族）+1 */
+function domainBoost(url: string): number {
+  const d = domainOf(url);
+  if (!d) return 0;
+  if (PREFERRED_SITES.some((s) => d === s.domain || d.endsWith("." + s.domain))) {
+    return 2;
+  }
+  if (BOOSTED_DOMAINS.some((s) => d === s || d.endsWith("." + s))) {
+    return 1;
+  }
+  return 0;
 }
 
 /** 英文停用词（含泛神话词，避免相关性判定过弱） */
@@ -58,26 +85,43 @@ const EN_STOPWORDS = new Set([
 /**
  * 把标题拆成检索词（用于候选评分与相关性门禁）。
  * CJK 整词附加 2 字 n-gram（如「雷神托尔」→ 雷神/神托/托尔），英文过滤停用词。
+ * 返回 { full: 整词, all: 整词 + n-gram }。
  */
-function titleTokens(title: string): string[] {
+function titleTokens(title: string): { full: string[]; all: string[] } {
   const parts = title
     .toLowerCase()
     .split(/[\s,，。·、;；:：!?！？"'“”‘’()（）\[\]]+/)
     .filter(Boolean);
-  const tokens: string[] = [];
+  const full: string[] = [];
+  const all: string[] = [];
   for (const p of parts) {
     if (/^[一-鿿]+$/.test(p)) {
-      tokens.push(p);
+      full.push(p);
+      all.push(p);
       if (p.length >= 4) {
-        for (let i = 0; i + 2 <= p.length; i++) tokens.push(p.slice(i, i + 2));
+        for (let i = 0; i + 2 <= p.length; i++) all.push(p.slice(i, i + 2));
       }
     } else if (/^[a-z0-9]+$/.test(p)) {
-      if (!EN_STOPWORDS.has(p) && p.length >= 2) tokens.push(p);
+      if (!EN_STOPWORDS.has(p) && p.length >= 2) {
+        full.push(p);
+        all.push(p);
+      }
     } else if (p.length >= 2) {
-      tokens.push(p);
+      full.push(p);
+      all.push(p);
     }
   }
-  return tokens;
+  return { full, all };
+}
+
+/** 统计文本中所有检索词的累计命中次数 */
+function countHits(text: string, tokens: string[]): number {
+  const lower = text.toLowerCase();
+  let hits = 0;
+  for (const t of tokens) {
+    hits += lower.split(t.toLowerCase()).length - 1;
+  }
+  return hits;
 }
 
 /** 候选命中标题关键词越多越优先（排序稳定，同分保持原始顺序） */
@@ -114,7 +158,7 @@ export async function POST(req: NextRequest) {
   const model = body.model || DEFAULT_MODELS[provider] || "gpt-4o-mini";
 
   const queries = attemptQueries(title, targetLang);
-  const tokens = titleTokens(title);
+  const { full: fullTokens, all: allTokens } = titleTokens(title);
   const attempted = new Set<string>(); // 明确失败（空/太短/单 URL 报错）的 URL，不再复用
   const timeoutCount = new Map<string, number>(); // 超时计数：允许复用一次
 
@@ -125,6 +169,8 @@ export async function POST(req: NextRequest) {
     try {
       results = await searchTinyFish(queries[attempt], {
         purpose: `寻找神话故事《${title}》的原文全文，用于文学加工`,
+        // 第一次尝试只在优先神话站点内搜索，保证原文质量
+        includeDomains: attempt === 0 ? PREFERRED_DOMAINS : undefined,
       });
     } catch {
       continue; // 本次搜索失败，进入下一查询词
@@ -137,13 +183,26 @@ export async function POST(req: NextRequest) {
           !attempted.has(r.url) &&
           (timeoutCount.get(r.url) ?? 0) < 2
       )
-      .sort((a, b) => scoreCandidate(tokens, b) - scoreCandidate(tokens, a))
+      // 域名层级优先：优先站 > 维基百科 > 其他；同层内按关键词命中排序。
+      // 避免「论坛摘要命中多次标题词」把优质百科/故事站挤出抓取名单。
+      .sort((a, b) => {
+        const da = domainBoost(a.url);
+        const db = domainBoost(b.url);
+        if (da !== db) return db - da;
+        return scoreCandidate(allTokens, b) - scoreCandidate(allTokens, a);
+      })
       .slice(0, CANDIDATES_PER_ATTEMPT);
 
     if (candidates.length === 0) continue;
 
+    console.log(
+      `[search] attempt=${attempt} query="${queries[attempt]}" scope=${attempt === 0 ? "preferred" : "general"} 候选: ${candidates
+        .map((c) => `${c.url} (score=${scoreCandidate(allTokens, c) + domainBoost(c.url)})`)
+        .join(" | ")}`
+    );
+
     // 相关性门禁：候选的标题/摘要必须命中至少一个标题检索词，否则跳过抓取
-    if (!candidates.some((c) => scoreCandidate(tokens, c) > 0)) continue;
+    if (!candidates.some((c) => scoreCandidate(allTokens, c) > 0)) continue;
 
     let fetched;
     try {
@@ -164,10 +223,21 @@ export async function POST(req: NextRequest) {
         continue;
       }
       const cleaned = cleanExtractedText(item.text ?? "");
+      const fullHits = countHits(cleaned, fullTokens);
+      const allHits = countHits(cleaned, allTokens);
       if (!isUsableExtract(cleaned)) {
+        console.log(`[search] 拒绝 ${cand.url}: 形态不可用(len=${cleaned.length})`);
         attempted.add(cand.url);
         continue;
       }
+      // 正文级相关性：标题整词 ≥3 次命中，或含 n-gram 的累计命中 ≥5 次
+      // （防止候选标题/摘要命中、但正文是无关列表/导航页、仅侧栏提一次标题的情况）
+      if (fullHits < 3 && allHits < 5) {
+        console.log(`[search] 拒绝 ${cand.url}: 命中不足 full=${fullHits} all=${allHits}`);
+        attempted.add(cand.url);
+        continue;
+      }
+      console.log(`[search] 采用 ${cand.url}: full=${fullHits} all=${allHits} len=${cleaned.length}`);
       best = { text: cleaned, url: cand.url };
       break;
     }

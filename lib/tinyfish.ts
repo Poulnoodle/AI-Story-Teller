@@ -44,7 +44,12 @@ export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 /** 调用 TinyFish 搜索接口，返回结构化结果（标题/摘要/URL） */
 export async function searchTinyFish(
   query: string,
-  opts: { purpose?: string; language?: string } = {}
+  opts: {
+    purpose?: string;
+    language?: string;
+    /** 限定只在这些域名内搜索（逗号分隔） */
+    includeDomains?: string;
+  } = {}
 ): Promise<TinyFishSearchResponse> {
   const key = process.env.TINYFISH_API_KEY;
   if (!key) throw new TinyFishError("缺少 TINYFISH_API_KEY 环境变量");
@@ -52,6 +57,7 @@ export async function searchTinyFish(
   const params = new URLSearchParams({ query, domain_type: "web" });
   if (opts.purpose) params.set("purpose", opts.purpose);
   if (opts.language) params.set("language", opts.language);
+  if (opts.includeDomains) params.set("include_domains", opts.includeDomains);
 
   const res = await withTimeout(
     fetch(`${SEARCH_ENDPOINT}?${params.toString()}`, {
@@ -98,6 +104,15 @@ const BOILERPLATE_PATTERNS: RegExp[] = [
   /^(Like|Comment|Share|Comments|No comments yet|Be the first to comment)$/i,
   /^(Verified account|Shared with Public|See more on Facebook|Follow)$/i,
   /^All reactions:.*$/i,
+  // 论坛/帖子噪声
+  /^\d+\s*(y|mo|d|h|min)\s*ago$/i, // 1y ago / 2 mo ago
+  /^(Archived post.*|Best comments?|Open comment sort options|# Comments Section)$/i,
+  /^r\/[A-Za-z0-9_]+$/,
+  /^(Ad|Advertisement|Sponsored|Promoted|Learn More)$/i,
+  // 维基百科横幅/表格噪声
+  /^(维基百科，自由的百科全书|關於.*，請見.*|关于.*，请见.*)$/,
+  /^(此條目需要补充更多来源.*|此条目需要补充更多来源.*|请协助補充多方面可靠来源.*|致使用者：请搜索一下条目的标题.*)$/,
+  /^[\s|—\-]+$/, // 表格边框行
   /^\d+$/, // 纯数字行
   /^·$/, // 分隔符行
 ];
@@ -113,8 +128,8 @@ export function isUsableExtract(text: string): boolean {
   const MIN_CHARS = 100;
   const MIN_CJK = 100;
   const MIN_WORDS = 50;
-  const MIN_AVG_LINE = 40;
-  const PROSE_LINE = 80;
+  const MIN_AVG_LINE = 20;
+  const PROSE_LINE = 40;
 
   if (
     text.length < MIN_CHARS ||

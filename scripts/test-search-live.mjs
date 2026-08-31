@@ -79,5 +79,28 @@ async function search(body) {
   );
 }
 
+// 4. 巴巴雅嘎：优先站/优质源（维基百科等），不得落在社交平台噪声页
+{
+  const { json } = await search({
+    title: "巴巴雅嘎",
+    targetLang: "zh",
+  });
+  const junk = /reddit\.com|facebook\.com|instagram\.com|youtube\.com|tiktok\.com/;
+  console.log(
+    `   [debug] 来源=${String(json.sourceUrl).slice(0, 90)} 字数=${json.wordCount}`
+  );
+  console.log(`   [debug] 内容预览：${String(json.rawText).slice(0, 200).replace(/\n/g, " / ")}`);
+  check(
+    "巴巴雅嘎：来源为优质站点且正文真正相关（含「雅嘎」）",
+    !!json?.rawText &&
+      json.rawText.length >= 100 &&
+      json.rawText.includes("雅嘎") &&
+      typeof json.sourceUrl === "string" &&
+      !junk.test(json.sourceUrl) &&
+      json.isFallback === false,
+    JSON.stringify({ sourceUrl: json?.sourceUrl, isFallback: json?.isFallback })
+  );
+}
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);
