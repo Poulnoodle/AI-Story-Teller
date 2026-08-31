@@ -6,11 +6,17 @@
 
 ## 快速开始
 
+**Windows 本机一键启动**：双击桌面「神话猎手」快捷方式，或双击项目根目录的 `start-mythhunter.bat` — 自动构建（首次）、启动服务并打开浏览器。关闭窗口即停止服务。
+
+**命令行**：
+
 ```bash
 npm install
 cp .env.example .env.local   # 填入 TINYFISH_API_KEY
 npm run dev                  # http://localhost:3000
 ```
+
+局域网内其他设备（同一 WiFi）访问 `http://<本机IP>:3000`。
 
 ## 环境变量
 
