@@ -5,6 +5,8 @@ import type { AppState } from "@/hooks/useAppState";
 export function generatingHint(state: AppState): string {
   if (state.phase === "estimating") return "正在搜索原文…";
   if (state.phase !== "generating") return "";
+  // 自动重试提示优先显示
+  if (state.error) return state.error;
   // 长文本：分段润色阶段给出明确进度
   if (state.meta?.mode === "long" && state.progress) {
     if (state.progress.done < state.progress.total) {

@@ -13,7 +13,12 @@ function statusInfo(state: AppState): {
   showSpinner: boolean;
 } {
   if (state.phase === "estimating" || state.phase === "generating") {
-    return { text: generatingHint(state), isError: false, showSpinner: true };
+    // 自动重试等错误提示以红色显示
+    return {
+      text: generatingHint(state),
+      isError: !!state.error,
+      showSpinner: true,
+    };
   }
   if (state.phase === "done") return { text: "生成完成 ✅", isError: false, showSpinner: false };
   if (state.phase === "estimated" && state.search) {

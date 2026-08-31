@@ -26,7 +26,11 @@ export default function OutputPanel() {
             ✨ 精修故事
           </h2>
           {busy && (
-            <p className="font-serif text-newspaper-ink/80">
+            <p
+              className={`font-serif ${
+                state.error ? "text-red-700 font-bold" : "text-newspaper-ink/80"
+              }`}
+            >
               <Spinner className="mr-2" />
               {generatingHint(state)}
             </p>

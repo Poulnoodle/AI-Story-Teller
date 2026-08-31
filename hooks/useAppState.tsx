@@ -96,6 +96,7 @@ type Action =
   | { type: "ANALYSIS_CHUNK"; delta: string }
   | { type: "PROCESS_USAGE"; cost: number }
   | { type: "PROCESS_ERROR"; message: string }
+  | { type: "PROCESS_RETRY"; message: string }
   | { type: "PROCESS_DONE" }
   | { type: "RESET" };
 
@@ -168,6 +169,9 @@ function reducer(state: AppState, action: Action): AppState {
     case "PROCESS_ERROR":
       // 保留已生成的部分文本，回到可重试状态（② 可直接再次点击）
       return { ...state, phase: "estimated", error: action.message, progress: null };
+    case "PROCESS_RETRY":
+      // 连接中断自动重试：保持生成中状态，提示正在重试
+      return { ...state, phase: "generating", error: action.message };
     case "PROCESS_DONE":
       return { ...state, phase: "done" };
     case "RESET":
@@ -322,94 +326,117 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     abortRef.current = controller;
     dispatch({ type: "GENERATE_START" });
 
-    // 流可能在没有 done/error 事件的情况下终止（如服务端超时切断），
-    // 用标记记录是否收到终止事件，流结束后据此收尾，避免永远停在“生成中”
-    let finished = false;
-    let receivedText = false;
+    // 流可能在没有 done/error 事件的情况下终止（切换标签页被浏览器节流/冻结、
+    // 移动端切后台断网、服务端超时切断等）。连接中断时自动重试一次，
+    // 仍失败才报错并保留手动重试（② 可再次点击）。
+    const MAX_AUTO_RETRIES = 1;
 
-    try {
-      await postSSE(
-        "/api/process",
-        {
-          rawText: state.search.rawText,
-          style: state.style,
-          needAnalysis: state.needAnalysis,
-          userApiKey: state.apiKey,
-          provider: state.provider,
-          model: state.model,
-          baseUrl: state.baseUrl || undefined,
-          title: state.title,
-          targetLang: state.targetLang,
-        },
-        {
-          signal: controller.signal,
-          onEvent: (event, data) => {
-            switch (event) {
-              case "meta":
-                dispatch({
-                  type: "PROCESS_META",
-                  mode: data.mode === "long" ? "long" : "normal",
-                  chunks:
-                    typeof data.chunks === "number" ? data.chunks : null,
-                });
-                break;
-              case "progress":
-                dispatch({
-                  type: "PROCESS_PROGRESS",
-                  done: typeof data.done === "number" ? data.done : 0,
-                  total: typeof data.total === "number" ? data.total : 0,
-                });
-                break;
-              case "chunk":
-                if (typeof data.delta === "string") {
-                  receivedText = true;
-                  dispatch({ type: "PROCESS_CHUNK", delta: data.delta });
-                }
-                break;
-              case "analysis_chunk":
-                if (typeof data.delta === "string") {
-                  dispatch({ type: "ANALYSIS_CHUNK", delta: data.delta });
-                }
-                break;
-              case "usage":
-                dispatch({
-                  type: "PROCESS_USAGE",
-                  cost: typeof data.estimatedCost === "number" ? data.estimatedCost : 0,
-                });
-                break;
-              case "error":
-                finished = true;
-                dispatch({
-                  type: "PROCESS_ERROR",
-                  message:
-                    typeof data.message === "string" ? data.message : "处理失败，请重试",
-                });
-                break;
-              case "done":
-                finished = true;
-                dispatch({ type: "PROCESS_DONE" });
-                break;
-              default:
-                break;
-            }
+    for (let attempt = 1; attempt <= MAX_AUTO_RETRIES + 1; attempt++) {
+      let finished = false;
+      let receivedText = false;
+
+      try {
+        await postSSE(
+          "/api/process",
+          {
+            rawText: state.search.rawText,
+            style: state.style,
+            needAnalysis: state.needAnalysis,
+            userApiKey: state.apiKey,
+            provider: state.provider,
+            model: state.model,
+            baseUrl: state.baseUrl || undefined,
+            title: state.title,
+            targetLang: state.targetLang,
           },
-        }
-      );
-      // 流正常结束但未收到 done/error（服务端中断）：已收到部分文本则按完成收尾，否则报错
-      if (!finished) {
-        if (receivedText) {
-          dispatch({ type: "PROCESS_DONE" });
-        } else {
+          {
+            signal: controller.signal,
+            onEvent: (event, data) => {
+              switch (event) {
+                case "meta":
+                  dispatch({
+                    type: "PROCESS_META",
+                    mode: data.mode === "long" ? "long" : "normal",
+                    chunks:
+                      typeof data.chunks === "number" ? data.chunks : null,
+                  });
+                  break;
+                case "progress":
+                  dispatch({
+                    type: "PROCESS_PROGRESS",
+                    done: typeof data.done === "number" ? data.done : 0,
+                    total: typeof data.total === "number" ? data.total : 0,
+                  });
+                  break;
+                case "chunk":
+                  if (typeof data.delta === "string") {
+                    receivedText = true;
+                    dispatch({ type: "PROCESS_CHUNK", delta: data.delta });
+                  }
+                  break;
+                case "analysis_chunk":
+                  if (typeof data.delta === "string") {
+                    dispatch({ type: "ANALYSIS_CHUNK", delta: data.delta });
+                  }
+                  break;
+                case "usage":
+                  dispatch({
+                    type: "PROCESS_USAGE",
+                    cost:
+                      typeof data.estimatedCost === "number"
+                        ? data.estimatedCost
+                        : 0,
+                  });
+                  break;
+                case "error":
+                  finished = true;
+                  dispatch({
+                    type: "PROCESS_ERROR",
+                    message:
+                      typeof data.message === "string"
+                        ? data.message
+                        : "处理失败，请重试",
+                  });
+                  break;
+                case "done":
+                  finished = true;
+                  dispatch({ type: "PROCESS_DONE" });
+                  break;
+                default:
+                  break;
+              }
+            },
+          }
+        );
+        // 流正常结束但未收到 done/error（服务端中断）
+        if (!finished) {
+          const canRetry =
+            attempt <= MAX_AUTO_RETRIES && !controller.signal.aborted;
+          if (canRetry) {
+            dispatch({
+              type: "PROCESS_RETRY",
+              message: `连接中断，正在自动重试（第 ${attempt} 次）…`,
+            });
+            continue;
+          }
           dispatch({
             type: "PROCESS_ERROR",
-            message: "连接中断，未收到完整结果，请重试",
+            message: "连接中断，未收到完整结果，请点击②重试",
           });
         }
-      }
-    } catch {
-      // 主动中止（重新生成/卸载）不报错；网络错误才提示
-      if (!controller.signal.aborted) {
-        dispatch({ type: "PROCESS_ERROR", message: "网络错误，请重试" });
+        break;
+      } catch {
+        // 主动中止（重新生成/卸载）不报错
+        if (controller.signal.aborted) break;
+        if (attempt <= MAX_AUTO_RETRIES) {
+          dispatch({
+            type: "PROCESS_RETRY",
+            message: `连接中断，正在自动重试（第 ${attempt} 次）…`,
+          });
+          continue;
+        }
+        dispatch({ type: "PROCESS_ERROR", message: "网络错误，请点击②重试" });
+        break;
       }
     }
   };
