@@ -136,15 +136,21 @@ async function streamOpenAICompatible(opts: LLMCallOpts): Promise<LLMResult> {
       }
       if (!res.ok) {
         const errText = await res.text().catch(() => "");
+        console.error(`[llm] ${endpoint} -> HTTP ${res.status}: ${errText.slice(0, 200)}`);
         throw new LLMError(friendlyError(res.status, errText), res.status);
       }
-      return parseOpenAIStream(
+      const result = await parseOpenAIStream(
         res.body as ReadableStream<Uint8Array>,
         opts.onDelta
       );
+      console.log(
+        `[llm] ${endpoint} ok: text=${result.text.length} in=${result.inputTokens} out=${result.outputTokens}`
+      );
+      return result;
     } catch (err) {
       if (isNetworkError(err)) {
         unreachableBases.add(base); // 记录失败端点，后续跳过
+        console.error(`[llm] ${base} 网络失败: ${(err as Error)?.message}`);
         continue; // 网络层失败 → 自动切换到下一个端点
       }
       throw wrapNetworkError(err);

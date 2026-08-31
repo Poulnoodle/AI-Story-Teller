@@ -147,6 +147,9 @@ export async function POST(req: NextRequest) {
 
       const longMode = needsChunking(rawText);
       const chunks = longMode ? splitIntoChunks(rawText) : null;
+      console.log(
+        `[process] 开始: mode=${longMode ? "long" : "normal"} rawText=${rawText.length}字 chunks=${chunks?.length ?? 0} provider=${body.provider} model=${body.model} needAnalysis=${body.needAnalysis}`
+      );
       send("meta", {
         mode: longMode ? "long" : "normal",
         chunks: chunks?.length,
@@ -170,8 +173,10 @@ export async function POST(req: NextRequest) {
         sendUsage(send, analysis);
       }
 
+      console.log(`[process] 完成: processedText=${processedText.length}字 analysis=${body.needAnalysis ? "已生成" : "未勾选"}`);
       send("done", {});
     } catch (err) {
+      console.error(`[process] 失败: ${err instanceof Error ? err.message : err}`);
       send("error", {
         message:
           err instanceof LLMError
