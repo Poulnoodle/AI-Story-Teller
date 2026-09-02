@@ -1,5 +1,6 @@
-// TinyFish 联网搜索封装（仅后端使用，绝不暴露给前端）
-// 认证：所有请求携带 X-API-Key: <TINYFISH_API_KEY> 头
+// TinyFish 联网搜索封装（浏览器直连，接口允许 CORS）
+// 认证：所有请求携带 X-API-Key: <NEXT_PUBLIC_TINYFISH_API_KEY> 头
+// 注意：该密钥构建期内联进公开 JS 包，任何人可见 —— 请使用专用低权限密钥
 // 搜索与抓取均免费（不从钱包扣费）
 
 import { countCJK, countLatinWords } from "./cost";
@@ -51,8 +52,8 @@ export async function searchTinyFish(
     includeDomains?: string;
   } = {}
 ): Promise<TinyFishSearchResponse> {
-  const key = process.env.TINYFISH_API_KEY;
-  if (!key) throw new TinyFishError("缺少 TINYFISH_API_KEY 环境变量");
+  const key = process.env.NEXT_PUBLIC_TINYFISH_API_KEY;
+  if (!key) throw new TinyFishError("缺少 NEXT_PUBLIC_TINYFISH_API_KEY（构建时未注入）");
 
   const params = new URLSearchParams({ query, domain_type: "web" });
   if (opts.purpose) params.set("purpose", opts.purpose);
@@ -76,8 +77,8 @@ export async function searchTinyFish(
 export async function fetchTinyFish(
   urls: string[]
 ): Promise<TinyFishFetchResponse> {
-  const key = process.env.TINYFISH_API_KEY;
-  if (!key) throw new TinyFishError("缺少 TINYFISH_API_KEY 环境变量");
+  const key = process.env.NEXT_PUBLIC_TINYFISH_API_KEY;
+  if (!key) throw new TinyFishError("缺少 NEXT_PUBLIC_TINYFISH_API_KEY（构建时未注入）");
 
   const res = await withTimeout(
     fetch(FETCH_ENDPOINT, {

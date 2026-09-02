@@ -1,0 +1,47 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Build static site
+        env:
+          # NEXT_PUBLIC_* 在构建期内联进公开 JS 包：
+          # 密钥缺失时为空字符串，页面密码回退默认值、搜索自动降级 LLM 生成，构建不失败
+          NEXT_PUBLIC_TINYFISH_API_KEY: ${{ secrets.TINYFISH_API_KEY }}
+          NEXT_PUBLIC_AUTH_PASSWORD: ${{ secrets.NEXT_PUBLIC_AUTH_PASSWORD }}
+        run: npm run build
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

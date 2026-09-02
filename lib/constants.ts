@@ -3,23 +3,21 @@ import type { Provider, TargetLang } from "./types";
 /** 各供应商默认模型（UI 中可编辑） */
 export const DEFAULT_MODELS: Record<Provider, string> = {
   openai: "deepseek-v4-flash",
-  anthropic: "claude-3-7-sonnet-latest",
   custom: "",
 };
 
 /**
  * 各供应商默认 Base URL。
- * openai：填写后作为主端点，连接失败自动回退官方 api.openai.com；留空则只用官方。
+ * openai：填写后作为唯一主端点；留空则使用 DeepSeek 默认（api.deepseek.com）。
+ * 静态版浏览器直连：官方 openai.com / anthropic.com 均不支持 CORS，已移除。
  */
 export const DEFAULT_BASE_URLS: Record<Provider, string> = {
   openai: "https://api.deepseek.com",
-  anthropic: "",
   custom: "",
 };
 
 export const PROVIDERS: { value: Provider; label: string }[] = [
-  { value: "openai", label: "OpenAI" },
-  { value: "anthropic", label: "Anthropic" },
+  { value: "openai", label: "OpenAI 兼容（默认 DeepSeek）" },
   { value: "custom", label: "自定义兼容端点（OpenAI 格式）" },
 ];
 

@@ -1,10 +1,10 @@
 // 共享类型定义
 
-export type Provider = "openai" | "anthropic" | "custom";
+export type Provider = "openai" | "custom";
 
 export type TargetLang = "zh" | "en";
 
-/** /api/search 的返回结构 */
+/** searchForStory（原 /api/search）的返回结构 */
 export interface SearchResult {
   rawText: string;
   sourceUrl: string;
@@ -16,7 +16,7 @@ export interface SearchResult {
   error?: string;
 }
 
-/** /api/process 的输入结构 */
+/** runProcessFlow（原 /api/process）的输入结构 */
 export interface ProcessInput {
   rawText: string;
   style: string;

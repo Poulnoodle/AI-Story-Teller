@@ -1,38 +1,33 @@
-// Step 1：搜索神话故事原文（TinyFish 搜索 + 抓取）
+// Step 1：搜索神话故事原文（TinyFish 搜索 + 抓取，浏览器直连）
 // 降级策略：3 次尝试（每次换查询词 + 换候选 URL 批次）全部失败后，
 // 调用用户 LLM 生成已知梗概，并用 [⚠️ AI 重构，未经原始文献核实] 强制标记包裹。
 
-import { NextRequest, NextResponse } from "next/server";
 import {
   cleanExtractedText,
   fetchTinyFish,
   isUsableExtract,
   searchTinyFish,
-} from "@/lib/tinyfish";
-import { completeLLM, LLMError } from "@/lib/llm";
-import { countCJK, countLatinWords, estimateSearchCost } from "@/lib/cost";
+} from "./tinyfish";
+import { completeLLM, LLMError } from "./llm";
+import { countCJK, countLatinWords, estimateSearchCost } from "./cost";
 import {
   BOOSTED_DOMAINS,
   DEFAULT_MODELS,
   FALLBACK_MARKER,
   PREFERRED_DOMAINS,
   PREFERRED_SITES,
-} from "@/lib/constants";
+} from "./constants";
 import type {
   Provider,
   SearchResult,
   TargetLang,
   TinyFishSearchResult,
-} from "@/lib/types";
-
-export const dynamic = "force-dynamic";
-export const runtime = "nodejs";
-export const maxDuration = 60;
+} from "./types";
 
 const CANDIDATES_PER_ATTEMPT = 3;
 const MAX_ATTEMPTS = 3;
 
-interface SearchRequestBody {
+export interface SearchParams {
   title: string;
   targetLang?: TargetLang;
   userApiKey?: string;
@@ -130,32 +125,29 @@ function scoreCandidate(tokens: string[], cand: TinyFishSearchResult): number {
   return tokens.reduce((score, t) => score + (haystack.includes(t) ? 1 : 0), 0);
 }
 
-function emptyResult(extra: Partial<SearchResult>): NextResponse {
-  return NextResponse.json({
+function emptyResult(extra: Partial<SearchResult>): SearchResult {
+  return {
     rawText: "",
     sourceUrl: "",
     wordCount: 0,
     estimatedCost: 0,
     isFallback: false,
     ...extra,
-  });
+  };
 }
 
-export async function POST(req: NextRequest) {
-  let body: SearchRequestBody;
-  try {
-    body = (await req.json()) as SearchRequestBody;
-  } catch {
-    return NextResponse.json({ error: "请求体不是合法 JSON" }, { status: 400 });
-  }
-
-  const title = (body.title ?? "").trim();
+/**
+ * 搜索神话原文（浏览器直连 TinyFish），失败时降级为用户 LLM 生成概要。
+ * 返回结构与原 /api/search 的 JSON 契约完全一致。
+ */
+export async function searchForStory(params: SearchParams): Promise<SearchResult> {
+  const title = (params.title ?? "").trim();
   if (!title) {
-    return NextResponse.json({ error: "标题不能为空" }, { status: 400 });
+    return emptyResult({ error: "标题不能为空" });
   }
-  const targetLang: TargetLang = body.targetLang === "en" ? "en" : "zh";
-  const provider: Provider = body.provider ?? "openai";
-  const model = body.model || DEFAULT_MODELS[provider] || "gpt-4o-mini";
+  const targetLang: TargetLang = params.targetLang === "en" ? "en" : "zh";
+  const provider: Provider = params.provider ?? "openai";
+  const model = params.model || DEFAULT_MODELS[provider] || "gpt-4o-mini";
 
   const queries = attemptQueries(title, targetLang);
   const { full: fullTokens, all: allTokens } = titleTokens(title);
@@ -245,7 +237,7 @@ export async function POST(req: NextRequest) {
 
   // ---- 3 次失败后降级：LLM 生成概要（不报错） ----
   if (!best) {
-    if (!body.userApiKey) {
+    if (!params.userApiKey) {
       return emptyResult({
         fallbackSkipped: true,
         error: "搜索失败且未提供 API Key，请填写后重试",
@@ -253,23 +245,22 @@ export async function POST(req: NextRequest) {
     }
     try {
       const summary = await completeLLM({
-        apiKey: body.userApiKey,
+        apiKey: params.userApiKey,
         provider,
         model,
-        baseUrl: body.baseUrl || undefined,
+        baseUrl: params.baseUrl || undefined,
         system: "你是一位神话学专家。",
         user: `请用${targetLang === "zh" ? "中文" : "English"}写出神话《${title}》的权威概要（人物、情节、背景），约500字。`,
         maxTokens: 1000,
       });
       const wrapped = `${FALLBACK_MARKER}\n\n${summary.text.trim()}\n\n${FALLBACK_MARKER}`;
-      const result: SearchResult = {
+      return {
         rawText: wrapped,
         sourceUrl: "AI 重构（未经原始文献核实）",
         wordCount: countCJK(wrapped) + countLatinWords(wrapped),
         estimatedCost: estimateSearchCost(wrapped.length),
         isFallback: true,
       };
-      return NextResponse.json(result);
     } catch (err) {
       return emptyResult({
         isFallback: true,
@@ -281,12 +272,11 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const result: SearchResult = {
+  return {
     rawText: best.text,
     sourceUrl: best.url,
     wordCount: countCJK(best.text) + countLatinWords(best.text),
     estimatedCost: estimateSearchCost(best.text.length),
     isFallback: false,
   };
-  return NextResponse.json(result);
 }

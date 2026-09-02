@@ -16,13 +16,14 @@ import {
   DEFAULT_MODELS,
   DEFAULT_PASSWORD,
 } from "@/lib/constants";
+import { runProcessFlow, type ProcessEvent } from "@/lib/process";
+import { searchForStory } from "@/lib/search";
 import type {
   Phase,
   Provider,
   SearchResult,
   TargetLang,
 } from "@/lib/types";
-import { postSSE } from "./useSSE";
 
 export interface AppState {
   phase: Phase;
@@ -46,7 +47,7 @@ export interface AppState {
   cost: number;
   /** 每次生成的唯一 key，用于重置打字机组件 */
   genId: number;
-  /** /api/process 的 meta 事件（normal / long + 分块数） */
+  /** 加工流程的 meta 事件（normal / long + 分块数） */
   meta: { mode: "normal" | "long"; chunks: number | null } | null;
   /** 长文本分段润色进度 */
   progress: { done: number; total: number } | null;
@@ -207,7 +208,7 @@ const AppContext = createContext<AppContextValue | null>(null);
 /** LLM 配置的浏览器缓存 key（API Key 按用户要求持久化，访问密码不缓存） */
 const STORAGE_KEY = "mythhunter-llm-config";
 
-const VALID_PROVIDERS: Provider[] = ["openai", "anthropic", "custom"];
+const VALID_PROVIDERS: Provider[] = ["openai", "custom"];
 
 export function AppStateProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
@@ -224,11 +225,18 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
       const config = JSON.parse(raw) as Record<string, unknown>;
-      const provider = VALID_PROVIDERS.includes(config.provider as Provider)
+      let provider = VALID_PROVIDERS.includes(config.provider as Provider)
         ? (config.provider as Provider)
         : undefined;
       let model = typeof config.model === "string" ? config.model : undefined;
       let baseUrl = typeof config.baseUrl === "string" ? config.baseUrl : undefined;
+      if (config.provider === "anthropic") {
+        // 静态版无法直连 Anthropic 官方 API（浏览器无 CORS）：
+        // 整体重置为 openai 默认，避免残留 claude 模型名错配到 DeepSeek 端点
+        provider = "openai";
+        model = DEFAULT_MODELS.openai;
+        baseUrl = DEFAULT_BASE_URLS.openai;
+      }
       if (!provider || provider === "openai") {
         // 旧默认迁移：model 为旧默认、baseUrl 为空或旧官方地址 → 换用新默认
         if (model === "gpt-4o-mini") model = DEFAULT_MODELS.openai;
@@ -288,19 +296,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     if (!unlocked || state.phase === "estimating") return;
     dispatch({ type: "SEARCH_START" });
     try {
-      const res = await fetch("/api/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: state.title,
-          targetLang: state.targetLang,
-          userApiKey: state.apiKey || undefined,
-          provider: state.provider,
-          model: state.model,
-          baseUrl: state.baseUrl || undefined,
-        }),
+      const data = await searchForStory({
+        title: state.title,
+        targetLang: state.targetLang,
+        userApiKey: state.apiKey || undefined,
+        provider: state.provider,
+        model: state.model,
+        baseUrl: state.baseUrl || undefined,
       });
-      const data = (await res.json()) as SearchResult;
       if (data.rawText) {
         dispatch({ type: "SEARCH_OK", result: data });
       } else {
@@ -326,18 +329,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     abortRef.current = controller;
     dispatch({ type: "GENERATE_START" });
 
-    // 流可能在没有 done/error 事件的情况下终止（切换标签页被浏览器节流/冻结、
-    // 移动端切后台断网、服务端超时切断等）。连接中断时自动重试一次，
-    // 仍失败才报错并保留手动重试（② 可再次点击）。
+    // 流可能在没有 done/error 事件的情况下终止（浏览器直连提供商时，
+    // 切换标签页被浏览器节流/冻结、移动端切后台断网等）。传输中断时
+    // 自动重试一次，仍失败才报错并保留手动重试（② 可再次点击）。
     const MAX_AUTO_RETRIES = 1;
 
     for (let attempt = 1; attempt <= MAX_AUTO_RETRIES + 1; attempt++) {
-      let finished = false;
-      let receivedText = false;
-
       try {
-        await postSSE(
-          "/api/process",
+        await runProcessFlow(
           {
             rawText: state.search.rawText,
             style: state.style,
@@ -351,7 +350,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           },
           {
             signal: controller.signal,
-            onEvent: (event, data) => {
+            // data 载荷形状已在生产者 lib/process.ts 侧编译期兜底（ProcessEventMap），
+            // 消费侧沿用旧 SSE 解析的宽松处理（typeof 防御性校验）
+            emit: (event: ProcessEvent, data: any) => {
               switch (event) {
                 case "meta":
                   dispatch({
@@ -370,7 +371,6 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
                   break;
                 case "chunk":
                   if (typeof data.delta === "string") {
-                    receivedText = true;
                     dispatch({ type: "PROCESS_CHUNK", delta: data.delta });
                   }
                   break;
@@ -389,7 +389,6 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
                   });
                   break;
                 case "error":
-                  finished = true;
                   dispatch({
                     type: "PROCESS_ERROR",
                     message:
@@ -399,7 +398,6 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
                   });
                   break;
                 case "done":
-                  finished = true;
                   dispatch({ type: "PROCESS_DONE" });
                   break;
                 default:
@@ -408,22 +406,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
             },
           }
         );
-        // 流正常结束但未收到 done/error（服务端中断）
-        if (!finished) {
-          const canRetry =
-            attempt <= MAX_AUTO_RETRIES && !controller.signal.aborted;
-          if (canRetry) {
-            dispatch({
-              type: "PROCESS_RETRY",
-              message: `连接中断，正在自动重试（第 ${attempt} 次）…`,
-            });
-            continue;
-          }
-          dispatch({
-            type: "PROCESS_ERROR",
-            message: "连接中断，未收到完整结果，请点击②重试",
-          });
-        }
+        // runProcessFlow 保证 error/done 事件在正常 resolve 前发出
         break;
       } catch {
         // 主动中止（重新生成/卸载）不报错

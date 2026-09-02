@@ -64,10 +64,8 @@ export default function SettingsPanel() {
         <div>
           <label className={labelCls}>
             {state.provider === "openai"
-              ? "Base URL（主端点，连不上自动回退官方；留空只用官方）"
-              : state.provider === "custom"
-                ? "Base URL（必填，需含 /v1）"
-                : "Base URL（留空使用官方默认端点）"}
+              ? "Base URL（主端点；留空使用默认 DeepSeek。OpenAI/Anthropic 官方 API 不支持浏览器直连）"
+              : "Base URL（必填，需含 /v1，且需允许跨域 CORS）"}
           </label>
           <input
             className={inputCls}

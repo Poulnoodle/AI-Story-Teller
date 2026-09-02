@@ -1,62 +1,42 @@
 "use client";
 
-// 底部工具栏：实际花费 + 保存按钮（POST /api/save → Blob 下载 .md）
+// 底部工具栏：实际花费 + 保存按钮（前端内联组装 Markdown → Blob 下载 .md）
 
-import { useState } from "react";
 import { useAppState } from "@/hooks/useAppState";
+import { buildMarkdown } from "@/lib/markdown";
+import { formatTimestamp, sanitizeFileName } from "@/lib/utils";
 import { formatUSD } from "@/lib/cost";
 
 export default function Toolbar() {
   const { state } = useAppState();
-  const [saving, setSaving] = useState(false);
   const canSave =
-    state.phase === "done" &&
-    state.processedText.trim().length > 0 &&
-    !saving;
+    state.phase === "done" && state.processedText.trim().length > 0;
 
-  const onSave = async () => {
+  const onSave = () => {
     if (!canSave) return;
-    setSaving(true);
-    try {
-      const res = await fetch("/api/save", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: state.title,
-          rawText: state.search?.rawText ?? "",
-          processedText: state.processedText,
-          analysis: state.analysis,
-          meta: {
-            sourceUrl: state.search?.sourceUrl ?? "",
-            language: state.targetLang,
-            style: state.style,
-            cost: state.cost,
-          },
-        }),
-      });
-      const data = (await res.json()) as {
-        fileName?: string;
-        markdownContent?: string;
-        error?: string;
-      };
-      if (!data.markdownContent || !data.fileName) {
-        throw new Error(data.error || "保存失败");
-      }
-      // 前端通过 Blob 执行实际下载
-      const blob = new Blob([data.markdownContent], {
-        type: "text/markdown;charset=utf-8",
-      });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = data.fileName;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      alert(err instanceof Error ? err.message : "保存失败，请重试");
-    } finally {
-      setSaving(false);
-    }
+    const markdownContent = buildMarkdown({
+      title: state.title,
+      rawText: state.search?.rawText ?? "",
+      processedText: state.processedText,
+      analysis: state.analysis,
+      meta: {
+        sourceUrl: state.search?.sourceUrl ?? "",
+        language: state.targetLang,
+        style: state.style,
+        cost: state.cost,
+      },
+    });
+    const fileName = `${sanitizeFileName(state.title)}_${formatTimestamp(new Date())}.md`;
+    // 前端通过 Blob 执行实际下载
+    const blob = new Blob([markdownContent], {
+      type: "text/markdown;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileName;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   return (
