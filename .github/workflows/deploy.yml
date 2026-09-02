@@ -21,8 +21,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 与本机（Windows, npm 11）保持一致：
+          # npm 10 按全平台校验 lockfile，会因 npm 11 裁剪的可选平台依赖（@emnapi/*）报 EUSAGE
+          node-version: 24
           cache: npm
+      - run: npm install -g npm@11
       - run: npm ci
       - name: Build static site
         env:
