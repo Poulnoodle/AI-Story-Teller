@@ -21,12 +21,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          # 与本机（Windows, npm 11）保持一致：
-          # npm 10 按全平台校验 lockfile，会因 npm 11 裁剪的可选平台依赖（@emnapi/*）报 EUSAGE
+          # 与本机（Windows, npm 11）保持一致
           node-version: 24
           cache: npm
       - run: npm install -g npm@11
-      - run: npm ci
+      # 注意：不能用 npm ci —— Windows 上 npm 11 生成 lockfile 时会按平台裁剪
+      # 外平台可选依赖的 peer 条目（@napi-rs/wasm-runtime → @emnapi/*），
+      # Linux 上 npm 校验时要求它们存在，跨平台 npm ci 必然报 EUSAGE。
+      # npm install 不校验 lockfile 同步，从 registry 按平台现场解析，永久免疫。
+      - run: npm install --no-audit --no-fund
       - name: Build static site
         env:
           # NEXT_PUBLIC_* 在构建期内联进公开 JS 包：
